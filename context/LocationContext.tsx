@@ -7,6 +7,7 @@ import { deleteHistory, insertLocation, loadHistory, releaseHistoryClear, remove
 import { processPlaces, processVisits, type ProcessedPlace, type RawLocation, type Visit } from '@/services/visitProcessor';
 import { calculateStatistics, type Statistics } from '@/services/statisticsService';
 import { parseGoogleTimelineText } from '@/services/googleTimeline';
+import { restoredTrackingPreferences } from '@/services/cloudData.mjs';
 
 export type LocationRecord = RawLocation;
 type Mode = 'new' | 'demo' | 'real';
@@ -40,6 +41,8 @@ type LocationContextValue = {
   renamePlace: (placeId: string, name: string | null) => Promise<void>;
   importTimeline: (text: string, filename: string) => Promise<TimelineImportMetadata>;
   removeImport: (id: string) => Promise<void>;
+  refreshHistory: () => Promise<void>;
+  activateRestoredHistory: () => Promise<void>;
 };
 
 function derive(records: RawLocation[], placeNames: Record<string, string> = {}) {
@@ -460,7 +463,30 @@ export function LocationProvider({ children }: { children: ReactNode }) {
     }
   }, [refreshRecords]);
 
-  return <LocationContext.Provider value={{ state, requestAccess, pause, resume, clearHistory, startDemo, openSettings, enableBackground, disableBackground, renamePlace, importTimeline, removeImport }}>{children}</LocationContext.Provider>;
+  const refreshHistory = useCallback(async () => refreshRecords(), [refreshRecords]);
+  const activateRestoredHistory = useCallback(async () => {
+    if (clearingHistory.current) throw new Error('Location history is being cleared. Try restoring again afterward.');
+    const restoreEpoch = deletionEpoch.current;
+    const shouldActivate = stateRef.current.mode !== 'real';
+    if (shouldActivate) {
+      await savePreferences(restoredTrackingPreferences());
+      if (clearingHistory.current || restoreEpoch !== deletionEpoch.current) {
+        throw new Error('Cloud restore was cancelled because local history was cleared.');
+      }
+    }
+    const stored = await loadHistory();
+    if (clearingHistory.current || restoreEpoch !== deletionEpoch.current) {
+      throw new Error('Cloud restore was cancelled because local history was cleared.');
+    }
+    setState(previous => ({
+      ...previous,
+      ...derive(stored.records, stored.placeNames),
+      imports: stored.imports,
+      ...(shouldActivate ? { mode: 'real' as const, status: 'paused' as const, backgroundEnabled: false, error: null } : {}),
+    }));
+  }, []);
+
+  return <LocationContext.Provider value={{ state, requestAccess, pause, resume, clearHistory, startDemo, openSettings, enableBackground, disableBackground, renamePlace, importTimeline, removeImport, refreshHistory, activateRestoredHistory }}>{children}</LocationContext.Provider>;
 }
 
 export function useLocation(): LocationContextValue {

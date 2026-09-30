@@ -5,6 +5,15 @@ import type { TimelineImportMetadata, TrackingPreferences } from './locationStor
 export async function loadHistory(): Promise<{ preferences: TrackingPreferences; records: RawLocation[]; placeNames: Record<string, string>; imports: TimelineImportMetadata[] }> {
   return { preferences: { mode: 'new', wantedActive: false, backgroundEnabled: false }, records: [], placeNames: {}, imports: [] };
 }
+export function getHistoryGeneration(): number { return 0; }
+export async function loadCloudBackupPoints(): Promise<never> {
+  throw new Error('Cloud backup is only available in the iOS or Android app.');
+}
+export async function mergeCloudRestorePoints(_points: Array<{
+  timestamp: number; lat: number; lng: number; accuracy: number; source: 'device' | 'import'; importId: string | null;
+}>, _canContinue?: () => boolean): Promise<never> {
+  throw new Error('Cloud restore is only available in the iOS or Android app.');
+}
 export async function savePreferences(_preferences: TrackingPreferences, _allowDuringHistoryClear = false): Promise<void> {}
 export async function insertLocation(_point: RawLocation): Promise<boolean> { return false; }
 export async function saveTimelineImport(

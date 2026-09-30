@@ -1,11 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import {
   Modal,
+  Alert,
   Pressable,
   ScrollView,
   StatusBar,
   StyleSheet,
   Text,
+  TextInput,
   ActivityIndicator,
   type StyleProp,
   type TextStyle,
@@ -18,6 +20,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useColors } from '@/hooks/useColors';
 import { nativePalette } from '@/constants/colors';
 import { useLocation } from '@/context/LocationContext';
+import { useCloud } from '@/context/CloudContext';
 import { demoPlaces, demoStatistics, demoWrappedCards } from '@/services/demoData';
 import { formatCoordinates } from '@/services/locationProcessing';
 import type { ProcessedPlace } from '@/services/visitProcessor';
@@ -728,7 +731,7 @@ export function ProfileScreen() {
           ) : null}
           <SettingRow
             title="Import Google Timeline"
-            copy="Add past visits from a file you choose. Imported locations stay on this device."
+            copy="Import itself stays on this device. Optional manual cloud backup can include imported points; the original JSON is never uploaded."
             icon="upload-cloud"
             testID="button-import-timeline"
             onPress={() => router.push('/import')}
@@ -745,6 +748,7 @@ export function ProfileScreen() {
         {!demo && controlMessage ? <Text accessibilityRole="alert" testID="status-tracking-control" style={[styles.bodyMuted, { marginTop: 12 }]}>{controlMessage}</Text> : null}
         {!demo && backgroundMessage ? <Text accessibilityRole="alert" testID="status-background-tracking" style={[styles.bodyMuted, { marginTop: 12 }]}>{backgroundMessage}</Text> : null}
       </View>
+      <CloudAccountSection demo={demo} localHistoryReady={state.ready} />
       <View style={[styles.aboutCard, { backgroundColor: colors.card }]} accessibilityRole="summary" accessibilityLabel="About Location Wrapped">
         <Label style={{ color: colors.lime }}>ABOUT THE APP</Label>
         <Text style={styles.aboutTitle}>About Location Wrapped</Text>
@@ -759,7 +763,7 @@ export function ProfileScreen() {
               <View style={styles.sheetHeadingText}><Label style={{ color: colors.pink }}>THIS CAN’T BE UNDONE</Label><Text style={styles.sheetTitle}>Delete your history?</Text></View>
               <Pressable onPress={() => setConfirm(false)} accessibilityLabel="Close confirmation" testID="button-close-confirmation" style={[styles.closeButton, { backgroundColor: nativePalette.close }]}><Feather name="x" size={18} color={colors.foreground} /></Pressable>
             </View>
-            <Text style={[styles.bodyMuted, { marginBottom: 22 }]}>This removes your recorded and imported locations, import history, and saved place names from this device. Your demo preview can always be opened again.</Text>
+            <Text style={[styles.bodyMuted, { marginBottom: 22 }]}>This removes your recorded and imported locations, import history, and saved place names from this device. It does not delete a cloud backup; delete that separately from the Orbit account section. Your demo preview can always be opened again.</Text>
             <View style={styles.confirmActions}>
               <View style={styles.confirmAction}><PrimaryButton title="Keep history" variant="outline" testID="button-cancel-delete" onPress={() => setConfirm(false)} wide /></View>
               <View style={styles.confirmAction}><PrimaryButton title={deleting ? 'Deleting…' : 'Delete history'} variant="danger" disabled={deleting} testID="button-confirm-delete" onPress={erase} wide /></View>
@@ -768,6 +772,219 @@ export function ProfileScreen() {
         </View>
       </Modal>
     </PageFrame>
+  );
+}
+
+function CloudAccountSection({ demo, localHistoryReady }: { demo: boolean; localHistoryReady: boolean }) {
+  const colors = useColors();
+  const cloud = useCloud();
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [accountPending, setAccountPending] = useState(false);
+  const [accountActionError, setAccountActionError] = useState('');
+  const [backupState, setBackupState] = useState<'idle' | 'pending' | 'complete' | 'failed'>('idle');
+  const busy = cloud.status === 'busy' || accountPending;
+  const unavailable = cloud.status === 'disabled';
+  const checking = cloud.status === 'checking';
+  const signedIn = !!cloud.user;
+
+  const authenticate = async () => {
+    cloud.clearError();
+    setAccountActionError('');
+    try {
+      if (authMode === 'register') await cloud.register(email.trim(), password);
+      else await cloud.login(email.trim(), password);
+      setPassword('');
+    } catch {
+      // The provider exposes the server's safe, user-facing error message.
+    }
+  };
+
+  const performAccountAction = async (action: () => Promise<unknown>) => {
+    if (busy) return;
+    setAccountPending(true);
+    setAccountActionError('');
+    try { await action(); }
+    catch (error) { setAccountActionError(error instanceof Error ? error.message : 'The account action could not be completed.'); }
+    finally { setAccountPending(false); }
+  };
+
+  const confirmConsent = () => {
+    Alert.alert(
+      'Enable optional Orbit backup?',
+      'If you choose Backup manually, precise recorded coordinates and imported location points will be uploaded to your Orbit account and kept there until you delete the cloud account. Nothing uploads automatically when you sign in. The original Google Timeline JSON file is never uploaded.',
+      [
+        { text: 'Not now', style: 'cancel' },
+        { text: 'Enable optional backup', onPress: () => { void performAccountAction(cloud.enableConsent); } },
+      ],
+    );
+  };
+
+  const backup = async () => {
+    cloud.clearError();
+    setBackupState('pending');
+    try {
+      await cloud.backup();
+      setBackupState('complete');
+    } catch {
+      setBackupState('failed');
+      // CloudContext.error displays the explicit failure.
+    }
+  };
+
+  const confirmRestore = () => {
+    Alert.alert(
+      'Restore cloud history?',
+      'Cloud points will be merged into this device’s history. Existing local history is kept; matching points are not added twice.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Restore and merge', onPress: () => {
+          cloud.clearError();
+          void cloud.restore().catch(() => undefined);
+        } },
+      ],
+    );
+  };
+
+  const confirmDeleteCloud = () => {
+    Alert.alert(
+      'Delete Orbit account and cloud data?',
+      'This permanently deletes your Orbit account and its cloud backup. Your location history on this device will remain. This does not delete local history.',
+      [
+        { text: 'Keep account', style: 'cancel' },
+        { text: 'Delete cloud account', style: 'destructive', onPress: () => {
+          cloud.clearError();
+          void cloud.deleteCloudAccount().catch(() => undefined);
+        } },
+      ],
+    );
+  };
+
+  return (
+    <View style={styles.sectionBlock} testID="section-orbit-account">
+      <SectionTitle>Orbit account &amp; backup</SectionTitle>
+      <View style={[styles.cloudCard, { backgroundColor: colors.card }]}>
+        <Text style={[styles.cloudStatusTitle, { color: colors.foreground }]} accessibilityRole="header">
+          {checking ? 'Checking account service…' : unavailable ? 'Cloud account unavailable' : signedIn ? `Signed in as ${cloud.user?.email}` : 'Your history stays on this device'}
+        </Text>
+        <Text style={[styles.bodyMuted, { marginTop: 7 }]} testID="text-cloud-local-only">
+          {unavailable
+            ? 'Orbit account and backup are unavailable in this build. Your local history remains on this device.'
+            : signedIn
+              ? 'Signing in does not upload history. Backup is a separate manual action, and restore merges cloud points into this device.'
+              : 'Orbit is optional. Your location history is local-only unless you create or sign in to an account, affirmatively opt in, and manually start a backup.'}
+        </Text>
+        {checking ? <ActivityIndicator style={{ marginTop: 14, alignSelf: 'flex-start' }} color={colors.lime} accessibilityLabel="Checking Orbit account" /> : null}
+        {unavailable ? (
+          <View style={[styles.cloudNotice, { backgroundColor: colors.secondary }]} testID="status-cloud-unavailable">
+            <Text style={styles.bodyMuted}>Cloud features are disabled or not configured for this app build. No account or backup request was made.</Text>
+          </View>
+        ) : null}
+        {!signedIn && !unavailable && !checking ? (
+          <>
+            <View style={styles.authSwitch}>
+              <Pressable accessibilityRole="button" accessibilityState={{ selected: authMode === 'login' }} testID="button-orbit-login-mode" onPress={() => setAuthMode('login')} disabled={busy} style={[styles.authChoice, authMode === 'login' && { borderColor: colors.lime }]}>
+                <Text style={[styles.authChoiceText, { color: authMode === 'login' ? colors.lime : colors.mutedForeground }]}>Sign in</Text>
+              </Pressable>
+              <Pressable accessibilityRole="button" accessibilityState={{ selected: authMode === 'register' }} testID="button-orbit-register-mode" onPress={() => setAuthMode('register')} disabled={busy} style={[styles.authChoice, authMode === 'register' && { borderColor: colors.lime }]}>
+                <Text style={[styles.authChoiceText, { color: authMode === 'register' ? colors.lime : colors.mutedForeground }]}>Create account</Text>
+              </Pressable>
+            </View>
+            <TextInput
+              accessibilityLabel="Orbit account email"
+              testID="input-orbit-email"
+              value={email}
+              onChangeText={setEmail}
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="email-address"
+              textContentType="emailAddress"
+              placeholder="Email"
+              placeholderTextColor={nativePalette.foregroundQuiet}
+              editable={!busy}
+              style={[styles.cloudInput, { color: colors.foreground, borderColor: colors.border }]}
+            />
+            <TextInput
+              accessibilityLabel="Orbit account password"
+              testID="input-orbit-password"
+              value={password}
+              onChangeText={setPassword}
+              autoCapitalize="none"
+              autoCorrect={false}
+              secureTextEntry
+              textContentType={authMode === 'register' ? 'newPassword' : 'password'}
+              placeholder="Password"
+              placeholderTextColor={nativePalette.foregroundQuiet}
+              editable={!busy}
+              style={[styles.cloudInput, { color: colors.foreground, borderColor: colors.border }]}
+            />
+            <PrimaryButton
+              title={busy ? 'Connecting…' : authMode === 'register' ? 'Create Orbit account' : 'Sign in to Orbit'}
+              icon={busy ? undefined : 'arrow-right'}
+              testID="button-orbit-authenticate"
+              disabled={busy || !email.trim() || !password}
+              onPress={() => void authenticate()}
+              wide
+            />
+          </>
+        ) : null}
+        {signedIn ? (
+          <View style={styles.cloudActions}>
+            {!cloud.consentEnabled ? (
+              <View style={[styles.cloudNotice, { backgroundColor: colors.secondary }]}>
+                <Text style={styles.bodyMuted}>Optional backup is off. Enable it only if you want to upload precise recorded and imported coordinates using the separate Backup button.</Text>
+                <PrimaryButton title="Review and opt in" icon="shield" variant="outline" testID="button-orbit-enable-consent" disabled={busy} onPress={confirmConsent} wide />
+              </View>
+            ) : (
+              <>
+                <Text style={styles.cloudPrivacyNote}>Optional manual backup is enabled. Nothing syncs automatically; you choose when to send points.</Text>
+                <PrimaryButton title={busy ? 'Backing up…' : 'Back up now'} icon="upload-cloud" testID="button-orbit-backup" disabled={busy || demo || !localHistoryReady} onPress={() => void backup()} wide />
+                {demo ? <Text style={styles.smallMuted}>Demo content is never uploaded. Switch to your recorded local history to back it up.</Text> : null}
+                {!localHistoryReady ? <Text style={styles.smallMuted}>Local history is still loading; backup is unavailable until it is ready.</Text> : null}
+                {backupState === 'pending' ? <Text accessibilityLiveRegion="polite" testID="status-orbit-backup-progress" style={styles.bodyMuted}>Backup in progress. Server analysis status will appear after the upload completes.</Text> : null}
+                {backupState === 'complete' && cloud.lastBackup ? (
+                  <View accessibilityLiveRegion="polite" testID="status-orbit-backup" style={styles.backupStatus}>
+                    <Text style={styles.success}>Backup complete: {cloud.lastBackup.uploaded} points sent, {cloud.lastBackup.inserted} new, {cloud.lastBackup.duplicates} already present.</Text>
+                    {cloud.lastBackup.analysisError ? (
+                      <Text accessibilityRole="alert" testID="status-orbit-analysis-unavailable" style={styles.errorText}>
+                        Server visit analysis was unavailable: {cloud.lastBackup.analysisError} Uploaded points remain in your Orbit account. You can retry analysis from Discover; recommendations are not guaranteed to be ready.
+                      </Text>
+                    ) : cloud.lastBackup.analysisJobId ? (
+                      <Text testID="status-orbit-analysis-queued" style={styles.bodyMuted}>
+                        Server visit analysis was queued. It may still be waiting for a worker; recommendations are not ready just because points uploaded. Check its status in Discover.
+                      </Text>
+                    ) : (
+                      <Text testID="status-orbit-analysis-not-queued" style={styles.bodyMuted}>
+                        No server analysis job was queued for this backup. Recommendations may not be ready; you can start or retry visit analysis in Discover.
+                      </Text>
+                    )}
+                  </View>
+                ) : null}
+                <PrimaryButton title={busy ? 'Restoring…' : 'Restore from cloud'} icon="download-cloud" variant="outline" testID="button-orbit-restore" disabled={busy || !cloud.consentEnabled} onPress={confirmRestore} wide />
+                {cloud.lastRestore ? <Text accessibilityLiveRegion="polite" testID="status-orbit-restore" style={styles.success}>Restore complete: {cloud.lastRestore.received} received, {cloud.lastRestore.inserted} merged into this device.</Text> : null}
+                <Pressable accessibilityRole="button" accessibilityLabel="Turn off optional cloud backup" testID="button-orbit-disable-consent" disabled={busy} onPress={() => { void performAccountAction(cloud.disableConsent); }} style={styles.cloudTextButton}>
+                  <Text style={{ color: colors.lime, fontFamily: 'Inter_600SemiBold', fontSize: 13 }}>Turn off optional backup</Text>
+                </Pressable>
+              </>
+            )}
+            <View style={styles.cloudAccountActions}>
+              <Pressable accessibilityRole="button" testID="button-orbit-discover" disabled={busy} onPress={() => router.push('/discover')} style={[styles.cloudNavButton, { borderColor: colors.border }]}>
+                <Text style={[styles.cloudNavText, { color: colors.foreground }]}>Explore server Discover</Text><Feather name="arrow-right" size={16} color={colors.lime} />
+              </Pressable>
+              <Pressable accessibilityRole="button" testID="button-orbit-logout" disabled={busy} onPress={() => { void performAccountAction(cloud.logout); }} style={styles.cloudTextButton}>
+                <Text style={styles.cloudDangerText}>Sign out</Text>
+              </Pressable>
+              <Pressable accessibilityRole="button" testID="button-orbit-delete-account" disabled={busy} onPress={confirmDeleteCloud} style={styles.cloudTextButton}>
+                <Text style={styles.cloudDangerText}>Delete Orbit account and cloud data</Text>
+              </Pressable>
+            </View>
+          </View>
+        ) : null}
+        {cloud.error ? <Text accessibilityRole="alert" accessibilityLiveRegion="polite" testID="status-orbit-error" style={styles.errorText}>{cloud.error}</Text> : null}
+        {accountActionError ? <Text accessibilityRole="alert" accessibilityLiveRegion="polite" testID="status-orbit-account-action-error" style={styles.errorText}>{accountActionError}</Text> : null}
+      </View>
+    </View>
   );
 }
 
@@ -924,6 +1141,21 @@ const styles = StyleSheet.create({
   settingRow: { minHeight: 73, borderBottomWidth: StyleSheet.hairlineWidth, paddingVertical: 14, paddingHorizontal: 2, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 14 },
   settingCopy: { flex: 1 },
   settingTitle: { color: nativePalette.white, fontFamily: 'Inter_500Medium', fontSize: 14, marginBottom: 4 },
+  cloudCard: { borderRadius: 18, padding: 18, gap: 12 },
+  cloudStatusTitle: { fontFamily: 'Inter_600SemiBold', fontSize: 16, lineHeight: 22 },
+  cloudNotice: { borderRadius: 12, padding: 14, gap: 12, marginTop: 4 },
+  cloudActions: { gap: 12, marginTop: 6 },
+  backupStatus: { gap: 9 },
+  cloudPrivacyNote: { color: nativePalette.foregroundSoft, fontFamily: 'Inter_400Regular', fontSize: 12, lineHeight: 18 },
+  cloudAccountActions: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: nativePalette.border, marginTop: 8, paddingTop: 8 },
+  authSwitch: { flexDirection: 'row', gap: 9, marginTop: 5 },
+  authChoice: { flex: 1, minHeight: 41, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'transparent', borderRadius: 9, backgroundColor: nativePalette.ink },
+  authChoiceText: { fontFamily: 'Inter_600SemiBold', fontSize: 12 },
+  cloudInput: { minHeight: 48, borderWidth: 1, borderRadius: 9, paddingHorizontal: 13, fontFamily: 'Inter_400Regular', fontSize: 14 },
+  cloudTextButton: { minHeight: 43, justifyContent: 'center', alignSelf: 'flex-start', paddingHorizontal: 2 },
+  cloudDangerText: { color: nativePalette.foregroundError, fontFamily: 'Inter_600SemiBold', fontSize: 12 },
+  cloudNavButton: { minHeight: 49, borderWidth: 1, borderRadius: 9, paddingHorizontal: 13, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginTop: 9 },
+  cloudNavText: { flex: 1, fontFamily: 'Inter_600SemiBold', fontSize: 13 },
   aboutCard: { borderRadius: 18, padding: 21, marginTop: 28 },
   aboutTitle: { color: nativePalette.white, fontFamily: 'Inter_600SemiBold', fontSize: 21, letterSpacing: -0.9, marginTop: 13, marginBottom: 8 },
   success: { backgroundColor: nativePalette.success, borderRadius: 10, padding: 14, color: nativePalette.successText, marginBottom: 18, fontSize: 13, lineHeight: 19 },

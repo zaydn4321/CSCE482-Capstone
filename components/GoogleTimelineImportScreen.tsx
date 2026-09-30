@@ -145,7 +145,7 @@ export function GoogleTimelineImportScreen() {
           <Text style={[styles.kicker, { color: colors.lime }]}>YOUR HISTORY, YOURS</Text>
           <Text accessibilityRole="header" style={[styles.title, { color: colors.foreground }]}>Bring your{'\n'}Timeline in.</Text>
           <Text style={[styles.description, { color: colors.mutedForeground }]}>
-            Add a Google Timeline export to your Wrapped. Your file and locations stay on this device — nothing is uploaded.
+            Import itself is local. If you separately opt in and manually start a cloud backup, imported location points can be included; the original JSON file is never uploaded.
           </Text>
         </View>
 
@@ -156,7 +156,7 @@ export function GoogleTimelineImportScreen() {
           <View style={styles.privacyCopy}>
             <Text style={[styles.privacyTitle, { color: colors.foreground }]}>Private by design</Text>
             <Text style={[styles.privacyBody, { color: colors.mutedForeground }]}>
-              Imports are stored locally beside your history. Your existing GPS points and personal place names are not replaced.
+              Imported points stay local unless you separately opt in and manually back them up. The original JSON file is never uploaded. Your existing GPS points and personal place names are not replaced.
             </Text>
           </View>
         </View>

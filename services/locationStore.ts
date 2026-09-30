@@ -5,6 +5,8 @@ import { filterLocationPoint, processPlaces, processVisits, type RawLocation } f
 import type { GoogleTimelineFormat } from './googleTimeline';
 import { reconcilePlaceNamesAfterImportRemoval } from './placeNameReconciliation';
 import { isTimelinePickerCacheJsonUri } from './timelinePickerCache';
+import { selectBackupSources } from './cloudData.mjs';
+import { insertCloudPointsAtomically } from './cloudRestoreTransaction.mjs';
 
 export type TrackingPreferences = {
   mode: 'new' | 'demo' | 'real';
@@ -27,10 +29,16 @@ export type TimelineImportMetadata = {
   format: GoogleTimelineFormat;
 };
 type ImportRow = { id: string; filename: string; imported_at: number; point_count: number; format: string };
+type CloudPointRow = { timestamp: number; latitude: number; longitude: number; accuracy: number; source: string; import_id: string | null };
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 let writeQueue: Promise<unknown> = Promise.resolve();
 let historyClearReserved = false;
+let historyGeneration = 0;
+
+export function getHistoryGeneration(): number {
+  return historyGeneration;
+}
 
 async function database(): Promise<SQLite.SQLiteDatabase> {
   if (!databasePromise) {
@@ -69,6 +77,16 @@ async function database(): Promise<SQLite.SQLiteDatabase> {
           longitude REAL NOT NULL,
           accuracy REAL NOT NULL,
           UNIQUE (import_id, timestamp, latitude, longitude)
+        );
+        CREATE TABLE IF NOT EXISTS cloud_restore_points (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          timestamp INTEGER NOT NULL,
+          latitude REAL NOT NULL,
+          longitude REAL NOT NULL,
+          accuracy REAL NOT NULL,
+          source TEXT NOT NULL CHECK (source IN ('device', 'import')),
+          import_id TEXT NOT NULL DEFAULT '',
+          UNIQUE (timestamp, latitude, longitude, source, import_id)
         );
         CREATE TABLE IF NOT EXISTS ${pendingTimelineFilesTable} (
           uri TEXT PRIMARY KEY NOT NULL
@@ -136,6 +154,8 @@ async function sweepTimelinePickerJsonCache(): Promise<void> {
 
 /** Reserve the write queue for clear-history. Active document picker flows make clearing fail safely. */
 export function reserveHistoryClear(): Promise<void> {
+  // Invalidate backup batches immediately when the user requests a local clear.
+  historyGeneration++;
   return serialize(async () => {
     if (historyClearReserved) throw new Error('Location history is already being cleared.');
     const db = await database();
@@ -228,15 +248,16 @@ export async function loadHistory(): Promise<{ preferences: TrackingPreferences;
   await writeQueue.catch(() => {});
   const db = await database();
   await migrateEarlierStorage(db);
-  const [row, points, importedPoints, names, importRows] = await Promise.all([
+  const [row, points, importedPoints, restoredPoints, names, importRows] = await Promise.all([
     db.getFirstAsync<PreferenceRow>('SELECT mode, wanted_active, background_enabled FROM tracking_preferences WHERE id = 1'),
     db.getAllAsync<PointRow>('SELECT latitude, longitude, timestamp, accuracy FROM raw_points ORDER BY timestamp ASC'),
     db.getAllAsync<PointRow>('SELECT latitude, longitude, timestamp, accuracy FROM imported_points ORDER BY timestamp ASC'),
+    db.getAllAsync<PointRow>('SELECT latitude, longitude, timestamp, accuracy FROM cloud_restore_points ORDER BY timestamp ASC'),
     db.getAllAsync<{ place_id: string; name: string }>('SELECT place_id, name FROM place_names'),
     db.getAllAsync<ImportRow>('SELECT id, filename, imported_at, point_count, format FROM timeline_imports ORDER BY imported_at DESC'),
   ]);
   const uniquePoints = new Map<string, RawLocation>();
-  for (const point of [...points, ...importedPoints]) {
+  for (const point of [...points, ...importedPoints, ...restoredPoints]) {
     const record = { lat: point.latitude, lng: point.longitude, timestamp: point.timestamp, accuracy: point.accuracy };
     const key = `${record.timestamp}:${record.lat.toFixed(6)}:${record.lng.toFixed(6)}`;
     if (!uniquePoints.has(key)) uniquePoints.set(key, record);
@@ -257,6 +278,48 @@ export async function loadHistory(): Promise<{ preferences: TrackingPreferences;
       format: item.format as GoogleTimelineFormat,
     })),
   };
+}
+
+/** Cloud backup includes only recorded local points and retains native/import provenance. */
+export async function loadCloudBackupPoints(): Promise<Array<{
+  timestamp: number; lat: number; lng: number; accuracy: number; source: 'device' | 'import'; importId: string | null;
+}>> {
+  await writeQueue.catch(() => {});
+  const db = await database();
+  const [nativePoints, importedPoints, restoredPoints] = await Promise.all([
+    db.getAllAsync<PointRow>('SELECT latitude, longitude, timestamp, accuracy FROM raw_points ORDER BY timestamp ASC'),
+    db.getAllAsync<PointRow & { import_id: string }>('SELECT latitude, longitude, timestamp, accuracy, import_id FROM imported_points ORDER BY timestamp ASC'),
+    db.getAllAsync<CloudPointRow>('SELECT timestamp, latitude, longitude, accuracy, source, import_id FROM cloud_restore_points ORDER BY timestamp ASC'),
+  ]);
+  const mapped = selectBackupSources([
+    ...nativePoints.map(point => ({ timestamp: point.timestamp, lat: point.latitude, lng: point.longitude, accuracy: point.accuracy, source: 'device' as const, importId: null, origin: 'device' })),
+    ...importedPoints.map(point => ({ timestamp: point.timestamp, lat: point.latitude, lng: point.longitude, accuracy: point.accuracy, source: 'import' as const, importId: point.import_id, origin: 'timeline_import' })),
+    ...restoredPoints.map(point => ({ timestamp: point.timestamp, lat: point.latitude, lng: point.longitude, accuracy: point.accuracy, source: point.source as 'device' | 'import', importId: point.import_id || null, origin: 'cloud_restore' })),
+  ]);
+  const unique = new Map<string, typeof mapped[number]>();
+  for (const point of mapped) {
+    const key = `${point.timestamp}:${point.lat.toFixed(6)}:${point.lng.toFixed(6)}:${point.source}:${point.importId ?? ''}`;
+    if (!unique.has(key)) unique.set(key, point);
+  }
+  return [...unique.values()].sort((a, b) => a.timestamp - b.timestamp);
+}
+
+/** Restored cloud points are idempotently merged into a separate local SQLite table. */
+export function mergeCloudRestorePoints(points: Array<{
+  timestamp: number; lat: number; lng: number; accuracy: number; source: 'device' | 'import'; importId: string | null;
+}>, canContinue?: () => boolean): Promise<number> {
+  if (points.some(point => !validPoint(point) || (point.source !== 'device' && point.source !== 'import'))) {
+    return Promise.reject(new Error('The cloud export contains invalid point provenance.'));
+  }
+  return serialize(async () => {
+    const restoreGeneration = historyGeneration;
+    if (canContinue && !canContinue()) throw new Error('Cloud restore was cancelled.');
+    if (historyClearReserved) throw new Error('Location history is being cleared. Try restoring again afterward.');
+    const db = await database();
+    return insertCloudPointsAtomically(db, points, () => (
+      !historyClearReserved && historyGeneration === restoreGeneration && (!canContinue || canContinue())
+    ));
+  });
 }
 
 /** Saves one file and all of its points as a single transaction. Native GPS rows and labels are untouched. */
@@ -494,6 +557,7 @@ export function deleteHistory(): Promise<void> {
     await db.withExclusiveTransactionAsync(async transaction => {
       await transaction.runAsync('DELETE FROM raw_points');
       await transaction.runAsync('DELETE FROM imported_points');
+      await transaction.runAsync('DELETE FROM cloud_restore_points');
       await transaction.runAsync('DELETE FROM timeline_imports');
       await transaction.runAsync('DELETE FROM tracking_preferences');
       await transaction.runAsync('DELETE FROM place_names');
