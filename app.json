@@ -1,52 +1,62 @@
 {
   "expo": {
-    "name": "Orbit",
-    "slug": "csce482-capstone",
+    "name": "Location Wrapped",
+    "slug": "location-wrapped-native",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "orbit",
-    "userInterfaceStyle": "automatic",
+    "scheme": "location-wrapped-native",
+    "userInterfaceStyle": "dark",
     "ios": {
-      "icon": "./assets/expo.icon",
-      "bundleIdentifier": "edu.tamu.csce482.orbit",
-      "supportsTablet": false
+      "bundleIdentifier": "com.locationwrapped.app281caa0fec8f60cb",
+      "supportsTablet": false,
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "Location Wrapped records your location while you use the app to build your personal place history.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "If you enable background tracking, Location Wrapped records your location while the app is closed to build your place history."
+      }
     },
     "android": {
-      "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/images/android-icon-foreground.png",
-        "backgroundImage": "./assets/images/android-icon-background.png",
-        "monochromeImage": "./assets/images/android-icon-monochrome.png"
-      },
-      "predictiveBackGestureEnabled": false,
-      "package": "edu.tamu.csce482.orbit"
+      "package": "com.locationwrapped.app281caa0fec8f60cb",
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_LOCATION"
+      ],
+      "blockedPermissions": [
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.READ_MEDIA_AUDIO",
+        "android.permission.READ_MEDIA_VISUAL_USER_SELECTED"
+      ]
     },
     "web": {
-      "output": "single",
-      "favicon": "./assets/images/favicon.png"
+      "favicon": "./assets/images/icon.png"
     },
     "plugins": [
       "expo-router",
       [
-        "expo-splash-screen",
-        {
-          "backgroundColor": "#208AEF",
-          "image": "./assets/images/splash-icon.png",
-          "imageWidth": 76
-        }
-      ],
-      "expo-sqlite",
-      [
         "expo-location",
         {
-          "locationWhenInUsePermission": "Orbit records where you go so you can see your own timeline. Location data stays on this phone.",
-          "locationAlwaysAndWhenInUsePermission": "Allow Always so Orbit can keep recording your timeline in the background with low-power batching.",
-          "isIosBackgroundLocationEnabled": true,
-          "isAndroidBackgroundLocationEnabled": true
+          "locationWhenInUsePermission": "Location Wrapped records your location while you use the app to build your personal place history.",
+          "locationAlwaysAndWhenInUsePermission": "If you enable background tracking, Location Wrapped records your location while the app is closed to build your place history.",
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true,
+          "isIosBackgroundLocationEnabled": true
         }
       ],
-      "expo-secure-store"
+      "expo-sharing",
+      [
+        "expo-media-library",
+        {
+          "photosPermission": false,
+          "savePhotosPermission": "Allow Location Wrapped to save your previewed Wrapped card to Photos.",
+          "isAccessMediaLocationEnabled": false,
+          "granularPermissions": []
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,
