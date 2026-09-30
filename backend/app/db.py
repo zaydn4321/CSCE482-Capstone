@@ -26,7 +26,16 @@ def make_engine(url: str) -> Engine:
             dbapi_connection.execute("PRAGMA foreign_keys=ON")
 
         return engine
-    return create_engine(url, pool_pre_ping=True)
+    return create_engine(compatible_database_url(url), pool_pre_ping=True)
+
+
+def compatible_database_url(url: str) -> str:
+    """Use the installed psycopg driver for platform-provided PostgreSQL URLs."""
+    if url.startswith("postgres://"):
+        return "postgresql+psycopg://" + url[len("postgres://"):]
+    if url.startswith("postgresql://"):
+        return "postgresql+psycopg://" + url[len("postgresql://"):]
+    return url
 
 
 engine = make_engine(settings.database_url)

@@ -12,8 +12,10 @@ from app.routers import auth, export, locations, places, predict, profile, recom
 def create_app(*, create_tables: bool = True) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        if create_tables:
+        if create_tables and settings.environment != "production":
             # Week 1: create_all. Alembic migrations take over once the schema stops moving.
+            # Replit publishes the development schema to its managed production DB;
+            # do not run schema-changing DDL at production startup.
             Base.metadata.create_all(engine)
         yield
 

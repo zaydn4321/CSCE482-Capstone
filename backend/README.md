@@ -3,8 +3,9 @@
 FastAPI service for accounts, location ingest, visit detection, place resolution
 against a self-hosted OpenStreetMap index, the interest profile, recommendations,
 next-place prediction and full export.
-SQLite by default so it runs with zero setup; PostgreSQL + PostGIS via Docker for
-anything real.
+SQLite by default for local development; use persistent PostgreSQL for real
+backups. The local Docker example provides PostgreSQL with PostGIS, although
+the application currently stores latitude and longitude as numeric columns.
 
 ## Run it
 
@@ -17,12 +18,52 @@ uvicorn app.main:app --reload
 python -m app.worker
 ```
 
+## Host the optional mobile cloud service on Replit
+
+Use a **separate Replit project** for this backend; do not replace the
+Location Wrapped workspace's existing API service. Import
+`zaydn4321/CSCE482-Capstone` from GitHub and choose **`backend/` as the project
+root**. Configure Python 3.12 or newer and set the development run command to
+`uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}`. If dependencies
+were not detected during import, install the backend package from this
+directory before starting it.
+
+1. Open that new project's **Database** tool and use its PostgreSQL
+   database. Replit supplies `DATABASE_URL` to the backend. Do not use the
+   SQLite development default or this workspace's unrelated database for
+   location backups.
+2. In the new project's Secrets, set a unique, random `ORBIT_JWT_SECRET` of at
+   least 32 characters. Never put it in Expo `EXPO_PUBLIC_*` variables, the
+   repository, or chat. Native clients do not require browser CORS, so the
+   production command defaults `ORBIT_CORS_ORIGINS` to `[]`. Only set it to a
+   JSON array of specific origins if you intentionally add a browser client.
+3. Run the development preview once so the development database gets the
+   required tables; check `/health`. Publish **that separate backend project**
+   as a **Reserved VM**, not an Autoscale service (the worker must run
+   continuously). Set the production build command to `python -m pip install .`
+   and its run command to `bash scripts/run_replit.sh`. Review the
+   development-to-production database schema in the publishing flow. The
+   production startup intentionally does not create or migrate tables itself.
+4. Once its public HTTPS URL is live, check `<url>/health`. Configure
+   `EXPO_PUBLIC_ORBIT_API_URL=<url>` when building the standalone Expo app,
+   then rebuild it; public Expo variables are embedded in the client build.
+   This URL is not a secret. Do not set it to a development `.replit.dev` URL.
+
+Production startup refuses the development signing secret, SQLite and wildcard
+CORS. The `/health` endpoint checks the API process only; after publishing,
+also run a manual backup and check the recompute job in the app to confirm the
+worker is running. No location upload happens merely by signing in.
+Replit's development and production databases are separate. Do not delete a
+database to handle schema changes for a real account; the local database
+reset advice below is for disposable development data only.
+
 Interactive docs: http://127.0.0.1:8000/docs
 
-> **Schema changed again in Month 2 Part 2 (recommendation feedback).** The app
-> still uses `create_all`, which never alters existing tables, so delete your local
-> database once after pulling: `rm orbit-dev.db` (or `docker compose down -v` for
-> Postgres). Alembic migrations replace this in month 3.
+> **For disposable local development databases only:** If your local schema is
+> outdated, `create_all` cannot alter existing tables. You may reset only a
+> database containing no real account or location data. Never run
+> `rm orbit-dev.db` or `docker compose down -v` against a database with real
+> history. Production schema changes require a reviewed migration.
 
 ## Load places
 
